@@ -1,4 +1,18 @@
 export type CustomerStatus = "VIP" | "Standard" | "At-Risk" | "New";
+export type EmailCampaignType = "vip" | "at-risk" | "welcome";
+
+export interface EmailCampaign {
+  type: EmailCampaignType;
+  subject: string;
+  description: string;
+}
+
+export interface EmailSendRequest {
+  customerId: string;
+  customerEmail: string;
+  campaignType: EmailCampaignType;
+  couponCode: string | null;
+}
 
 export interface WooCommerceLineItem {
   name: string;

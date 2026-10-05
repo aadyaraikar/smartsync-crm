@@ -1,6 +1,61 @@
 import { NextResponse } from "next/server";
+import { createOpenAI } from "@ai-sdk/openai";
+import { generateText, Output, stepCountIs, tool } from "ai";
+import { z } from "zod";
 import { calculateLTVTier, generateCouponCode, saveOutreachLog } from "@/lib/agent-tools";
 import type { AgentResponse, Customer, ToolCall, TraceEntry } from "@/lib/types";
+
+const calculateLTVTierInput = z.object({ customerId: z.string(), totalSpent: z.number() });
+const generateCouponCodeInput = z.object({ discountPercent: z.number(), reason: z.string() });
+const saveOutreachLogInput = z.object({ customerId: z.string(), message: z.string(), coupon: z.string().nullable() });
+
+const strategyOutput = z.object({
+  summary: z.string(),
+  recommendation: z.string(),
+  actions: z.array(z.string()).min(1).max(3),
+  riskLevel: z.string(),
+  objectives: z.array(z.string()).min(1).max(3),
+  strategy: z.array(z.string()).min(1).max(4),
+  message: z.string(),
+  timing: z.string(),
+  successMetrics: z.array(z.string()).min(1).max(4),
+});
+
+function createAgentTools() {
+  return {
+    calculateLTVTier: tool({
+      description: "Determine customer tier based on LTV and recent purchase behavior.",
+      inputSchema: calculateLTVTierInput,
+      execute: ({ customerId, totalSpent }) => calculateLTVTier(customerId, totalSpent),
+    }),
+    generateCouponCode: tool({
+      description: "Generate a personalized retention coupon when an incentive is appropriate.",
+      inputSchema: generateCouponCodeInput,
+      execute: ({ discountPercent, reason }) => generateCouponCode(discountPercent, reason),
+    }),
+    saveOutreachLog: tool({
+      description: "Log the retention action and optional coupon for tracking.",
+      inputSchema: saveOutreachLogInput,
+      execute: ({ customerId, message, coupon }) => saveOutreachLog(customerId, message, coupon),
+    }),
+  };
+}
+
+function sdkTrace(steps: unknown[]): { toolCalls: ToolCall[]; traceEntries: TraceEntry[] } {
+  const toolCalls: ToolCall[] = [];
+  const traceEntries: TraceEntry[] = [];
+  for (const step of steps as Array<{ toolCalls?: Array<{ toolName: string; input: unknown }>; toolResults?: Array<{ toolName: string; output: unknown }> }>) {
+    for (const call of step.toolCalls ?? []) {
+      const result = step.toolResults?.find((toolResult) => toolResult.toolName === call.toolName);
+      const timestamp = new Date().toISOString();
+      if (["calculateLTVTier", "generateCouponCode", "saveOutreachLog"].includes(call.toolName)) {
+        toolCalls.push({ tool: call.toolName as ToolCall["tool"], input: call.input, output: result?.output ?? null, timestamp });
+        traceEntries.push({ id: `trace_${Date.now()}_${toolCalls.length}`, timestamp, message: `AI called ${call.toolName}`, type: "action", toolName: call.toolName, toolInput: call.input, toolOutput: result?.output });
+      }
+    }
+  }
+  return { toolCalls, traceEntries };
+}
 
 function fallbackRecommendation(customer: Customer): AgentResponse {
   const daysSinceOrder = Number.isNaN(Date.parse(customer.lastOrderDate)) ? 0 : Math.floor((Date.now() - Date.parse(customer.lastOrderDate)) / 86_400_000);
@@ -69,24 +124,23 @@ export async function POST(request: Request) {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return NextResponse.json(fallback);
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
-        temperature: 0.3,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: "You are a customer retention strategist. Return JSON with summary, recommendation, actions, riskLevel, objectives, strategy, message, timing, and successMetrics. Arrays should contain concise, practical strings." },
-          { role: "user", content: JSON.stringify(customer) },
-        ],
-      }),
+    const openai = createOpenAI({ apiKey });
+    const tools = createAgentTools();
+    const result = await generateText({
+      model: openai(process.env.OPENAI_MODEL ?? "gpt-4o-mini"),
+      system: "You are an autonomous CRM retention agent. Analyze the customer, call calculateLTVTier first, decide whether an incentive is useful, call generateCouponCode when appropriate, and always call saveOutreachLog. Then return a practical detailed retention strategy. Never invent tool outputs.",
+      prompt: JSON.stringify(customer),
+      tools,
+      toolChoice: "auto",
+      stopWhen: stepCountIs(6),
+      output: Output.object({ schema: strategyOutput }),
     });
-    if (!response.ok) return NextResponse.json(fallback);
-
-    const data = await response.json();
-    const result = JSON.parse(data.choices?.[0]?.message?.content ?? "{}");
-    return NextResponse.json({ success: true, customer, summary: result.summary ?? fallback.summary, recommendation: result.recommendation ?? fallback.recommendation, actions: Array.isArray(result.actions) ? result.actions.slice(0, 3) : fallback.actions, riskLevel: result.riskLevel ?? fallback.riskLevel, objectives: Array.isArray(result.objectives) ? result.objectives : fallback.objectives, strategy: Array.isArray(result.strategy) ? result.strategy : fallback.strategy, message: result.message ?? fallback.message, timing: result.timing ?? fallback.timing, successMetrics: Array.isArray(result.successMetrics) ? result.successMetrics : fallback.successMetrics, toolCalls: fallback.toolCalls, traceEntries: fallback.traceEntries, source: "openai" });
+    const traced = sdkTrace(await result.steps);
+    if (traced.toolCalls.length === 0 || !result.output) {
+      console.warn("AI agent completed without the expected tool calls", { customerId: customer.id });
+      return NextResponse.json(fallback);
+    }
+    return NextResponse.json({ success: true, customer, ...result.output, toolCalls: traced.toolCalls, traceEntries: traced.traceEntries, source: "openai" });
   } catch (error) {
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : "Agent request failed" }, { status: 400 });
   }

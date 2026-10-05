@@ -12,6 +12,7 @@ SmartSync CRM is a WooCommerce retention workspace that turns order events into 
 - Retention Copilot customer strategy pages
 - `calculateLTVTier`, `generateCouponCode`, and `saveOutreachLog` tools
 - Optional OpenAI strategy generation with a local fallback when no API key is present
+- Email campaigns for VIP, At-Risk, and New customers through Resend
 - Vitest coverage for webhook parsing, LTV calculations, repeat orders, and agent tools
 
 ## Tech Stack
@@ -22,7 +23,7 @@ SmartSync CRM is a WooCommerce retention workspace that turns order events into 
 - Zod payload validation
 - Lucide React icons
 - Vitest
-- Optional OpenAI Chat Completions integration
+- Vercel AI SDK tool calling with an OpenAI provider
 
 ## Quick Start
 
@@ -37,7 +38,7 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-For live OpenAI recommendations, copy `.env.local.example` to `.env.local` and set `OPENAI_API_KEY`. The local fallback works without a key.
+For live OpenAI recommendations, copy `.env.local.example` to `.env.local` and set `OPENAI_API_KEY`. For real email delivery, set `RESEND_API_KEY` and `EMAIL_FROM`. The local strategy and email demo fallbacks work without either key.
 
 ## Workflow
 
@@ -62,12 +63,28 @@ Returns the customers held by the current in-memory server process.
 
 Accepts a customer object and returns a retention strategy, tool calls, execution trace, and source (`fallback` or `openai`).
 
+### `POST /api/email`
+
+Accepts `customerId`, `customerEmail`, `campaignType` (`vip`, `at-risk`, or `welcome`), and an optional `couponCode`. It sends through Resend when configured, otherwise logs a successful local demo send.
+
 ## Testing
 
 ```bash
 npm test
 npm run build
 ```
+
+## Vercel Deployment
+
+1. Import `https://github.com/aadyaraikar/smartsync-crm` into Vercel.
+2. Add `OPENAI_API_KEY`, `RESEND_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_API_URL`, and `EMAIL_FROM` under **Settings > Environment Variables**.
+3. Deploy with the build settings in `vercel.json`.
+4. Check `https://your-domain.vercel.app/api/health` after deployment.
+5. Set the WooCommerce webhook URL to `https://your-domain.vercel.app/api/webhooks/woocommerce`.
+
+The GitHub Actions workflow in `.github/workflows/deploy.yml` runs `npm ci`, `npm test`, and `npm run build` on pushes and pull requests to `master` or `main`.
+
+The health endpoint reports whether each provider has its required configuration. It does not return secrets or make external provider calls.
 
 ## Project Structure
 

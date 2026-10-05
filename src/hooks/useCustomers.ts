@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { seedCustomers } from "@/lib/crm-store";
 import type { AgentResponse, Customer, TraceEntry } from "@/lib/types";
 
@@ -8,12 +8,33 @@ const initialTrace: TraceEntry[] = [
   { id: "trace-1", timestamp: new Date().toISOString(), message: "WooCommerce sync is listening for customer events", type: "result" },
   { id: "trace-2", timestamp: new Date().toISOString(), message: "Customer segments loaded", type: "thinking" },
 ];
+const customerStorageKey = "smartsync-customers";
 
 export function useCustomers() {
   const [customers, setCustomers] = useState<Customer[]>(seedCustomers);
   const [traceLog, setTraceLog] = useState<TraceEntry[]>(initialTrace);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    try {
+      const stored = window.sessionStorage.getItem(customerStorageKey);
+      if (stored) {
+        const parsed = JSON.parse(stored) as Customer[];
+        if (Array.isArray(parsed)) setCustomers(parsed);
+      }
+    } catch (storageError) {
+      console.warn("Unable to restore customer session", storageError);
+    } finally {
+      setHydrated(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    window.sessionStorage.setItem(customerStorageKey, JSON.stringify(customers));
+  }, [customers, hydrated]);
 
   function addCustomer(customer: Customer) {
     setCustomers((current) => [customer, ...current.filter((item) => item.email !== customer.email)]);

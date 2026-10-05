@@ -1,0 +1,11 @@
+{
+  "env": {
+    "OPENAI_API_KEY": "@openai-api-key",
+    "SUPABASE_URL": "@supabase-url",
+    "SUPABASE_ANON_KEY": "@supabase-anon-key",
+    "RESEND_API_KEY": "@resend-api-key"
+  },
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install"
+}
