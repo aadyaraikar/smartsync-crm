@@ -1,27 +1,37 @@
 import { NextResponse } from "next/server";
-import type { Customer } from "@/lib/types";
-
-type AgentResponse = {
-  customer: Customer;
-  summary: string;
-  recommendation: string;
-  actions: string[];
-  riskLevel: string;
-  objectives: string[];
-  strategy: string[];
-  message: string;
-  timing: string;
-  successMetrics: string[];
-  source: "openai" | "fallback";
-};
+import { calculateLTVTier, generateCouponCode, saveOutreachLog } from "@/lib/agent-tools";
+import type { AgentResponse, Customer, ToolCall, TraceEntry } from "@/lib/types";
 
 function fallbackRecommendation(customer: Customer): AgentResponse {
-  const atRisk = customer.status === "At-Risk";
+  const daysSinceOrder = Number.isNaN(Date.parse(customer.lastOrderDate)) ? 0 : Math.floor((Date.now() - Date.parse(customer.lastOrderDate)) / 86_400_000);
+  const tierResult = calculateLTVTier(customer.id, customer.ltv, daysSinceOrder);
+  const atRisk = customer.status === "At-Risk" || tierResult.tier === "At-Risk";
   const summary = atRisk
     ? `${customer.name} has not ordered recently despite ${customer.totalOrders} previous orders.`
     : `${customer.name} is an active ${customer.status.toLowerCase()} customer with ${customer.totalOrders} order${customer.totalOrders === 1 ? "" : "s"}.`;
 
+  const timestamp = new Date().toISOString();
+  const toolCalls: ToolCall[] = [{ tool: "calculateLTVTier", input: { customerId: customer.id, totalSpent: customer.ltv }, output: tierResult, timestamp }];
+  const traceEntries: TraceEntry[] = [
+    { id: `trace_${Date.now()}_1`, timestamp, message: "Analyzing customer LTV and purchase behavior", type: "thinking", toolName: "calculateLTVTier" },
+    { id: `trace_${Date.now()}_2`, timestamp, message: `Customer tier: ${tierResult.tier} (${tierResult.reason})`, type: "result", toolName: "calculateLTVTier", toolOutput: tierResult },
+  ];
+  const discount = atRisk ? 15 : customer.status === "New" ? 10 : 0;
+  if (discount > 0) {
+    const coupon = generateCouponCode(discount, atRisk ? "At-Risk retention" : "New customer welcome");
+    toolCalls.push({ tool: "generateCouponCode", input: { discountPercent: discount, reason: coupon.reason }, output: coupon, timestamp: new Date().toISOString() });
+    traceEntries.push({ id: `trace_${Date.now()}_3`, timestamp: new Date().toISOString(), message: `Generated code: ${coupon.code} (${coupon.discountPercent}% off)`, type: "action", toolName: "generateCouponCode", toolOutput: coupon });
+    const outreach = saveOutreachLog(customer.id, atRisk ? "Win-back retention offer" : "Welcome follow-up", coupon.code);
+    toolCalls.push({ tool: "saveOutreachLog", input: { customerId: customer.id, message: outreach.message, coupon: coupon.code }, output: outreach, timestamp: outreach.timestamp });
+    traceEntries.push({ id: `trace_${Date.now()}_4`, timestamp: outreach.timestamp, message: "Outreach action logged for activation", type: "result", toolName: "saveOutreachLog", toolOutput: outreach });
+  } else {
+    const outreach = saveOutreachLog(customer.id, "Loyalty follow-up recommended", null);
+    toolCalls.push({ tool: "saveOutreachLog", input: { customerId: customer.id, message: outreach.message, coupon: null }, output: outreach, timestamp: outreach.timestamp });
+    traceEntries.push({ id: `trace_${Date.now()}_3`, timestamp: outreach.timestamp, message: "Loyalty follow-up logged without discount", type: "result", toolName: "saveOutreachLog", toolOutput: outreach });
+  }
+
   return {
+    success: true,
     customer,
     summary,
     recommendation: atRisk
@@ -42,6 +52,8 @@ function fallbackRecommendation(customer: Customer): AgentResponse {
       : `Hi ${customer.name.split(" ")[0]}, we hope you are enjoying your recent order. We found a few products that pair well with it and added a loyalty reward to your account for your next visit.`,
     timing: atRisk ? "Send today at 10:00 AM local time, then follow up once after 4 days." : "Send within 48 hours of the next meaningful site visit or product interaction.",
     successMetrics: ["Email open rate above 38%", "Click-through rate above 6%", "A repeat purchase or meaningful product view within 14 days"],
+    toolCalls,
+    traceEntries,
     source: "fallback",
   };
 }
@@ -55,7 +67,7 @@ export async function POST(request: Request) {
 
     const fallback = fallbackRecommendation(customer);
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return NextResponse.json({ success: true, ...fallback });
+    if (!apiKey) return NextResponse.json(fallback);
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -70,11 +82,11 @@ export async function POST(request: Request) {
         ],
       }),
     });
-    if (!response.ok) return NextResponse.json({ success: true, ...fallback });
+    if (!response.ok) return NextResponse.json(fallback);
 
     const data = await response.json();
     const result = JSON.parse(data.choices?.[0]?.message?.content ?? "{}");
-    return NextResponse.json({ success: true, customer, summary: result.summary ?? fallback.summary, recommendation: result.recommendation ?? fallback.recommendation, actions: Array.isArray(result.actions) ? result.actions.slice(0, 3) : fallback.actions, riskLevel: result.riskLevel ?? fallback.riskLevel, objectives: Array.isArray(result.objectives) ? result.objectives : fallback.objectives, strategy: Array.isArray(result.strategy) ? result.strategy : fallback.strategy, message: result.message ?? fallback.message, timing: result.timing ?? fallback.timing, successMetrics: Array.isArray(result.successMetrics) ? result.successMetrics : fallback.successMetrics, source: "openai" });
+    return NextResponse.json({ success: true, customer, summary: result.summary ?? fallback.summary, recommendation: result.recommendation ?? fallback.recommendation, actions: Array.isArray(result.actions) ? result.actions.slice(0, 3) : fallback.actions, riskLevel: result.riskLevel ?? fallback.riskLevel, objectives: Array.isArray(result.objectives) ? result.objectives : fallback.objectives, strategy: Array.isArray(result.strategy) ? result.strategy : fallback.strategy, message: result.message ?? fallback.message, timing: result.timing ?? fallback.timing, successMetrics: Array.isArray(result.successMetrics) ? result.successMetrics : fallback.successMetrics, toolCalls: fallback.toolCalls, traceEntries: fallback.traceEntries, source: "openai" });
   } catch (error) {
     return NextResponse.json({ success: false, error: error instanceof Error ? error.message : "Agent request failed" }, { status: 400 });
   }

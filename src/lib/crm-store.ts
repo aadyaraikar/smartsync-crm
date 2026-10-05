@@ -46,4 +46,9 @@ export const seedCustomers: Customer[] = [
     lastOrderDate: "Sep 22, 2026",
     status: "New",
   },
+  { id: "cus_1043", name: "Marcus Lee", email: "marcus.lee@example.com", ltv: 510, totalOrders: 5, lastOrderDate: "Sep 20, 2026", status: "VIP" },
+  { id: "cus_1042", name: "Nora Patel", email: "nora.patel@example.com", ltv: 310, totalOrders: 2, lastOrderDate: "Aug 14, 2026", status: "Standard" },
+  { id: "cus_1041", name: "Elliot Park", email: "elliot.park@example.com", ltv: 155, totalOrders: 1, lastOrderDate: "Sep 30, 2026", status: "New" },
+  { id: "cus_1040", name: "Camila Ruiz", email: "camila.ruiz@example.com", ltv: 760, totalOrders: 6, lastOrderDate: "Jul 02, 2026", status: "At-Risk" },
+  { id: "cus_1039", name: "Oliver Grant", email: "oliver.grant@example.com", ltv: 275, totalOrders: 2, lastOrderDate: "Sep 11, 2026", status: "Standard" },
 ];
